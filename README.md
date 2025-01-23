@@ -1,4 +1,4 @@
-# Open-Source Fiber Optic FPV System
+# Fiber Optic FPV System
 
 A **DIY Fiber Optic-enabled FPV video and control system** designed for affordable, high-performance drone operation. This system uses off-the-shelf components to deliver interference-free communication and advanced features at a cost of around **$300**.
 
