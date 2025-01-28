@@ -26,4 +26,4 @@ Contributions are welcome! You can:
 
 ---
 
-Thank you for checking out the Fiber Optic FPV System! I’m excited to see how this project grows with your input and support.
+Thank you.
