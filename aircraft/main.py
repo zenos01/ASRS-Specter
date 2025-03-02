@@ -1,375 +1,263 @@
-"""
-
-320 x 240 - 33ms
-640 x 480 - 42ms
-
-Pi command:
-
-gst-launch-1.0 libcamerasrc ! \
-    "video/x-raw,width=640,height=480,format=NV12,framerate=30/1" ! \
-    videoconvert ! \
-    jpegenc quality=50 !
-    rtpjpegpay ! \
-    udpsink host=192.168.2.1 port=7777
-
-Ground PC:
-
-gst-launch-1.0 -v udpsrc port=7777 caps="application/x-rtp, encoding-name=JPEG, payload=26" ! rtpjpegdepay ! jpegdec ! videoconvert ! \autovideosink sync=false
-
-"""
-
-import socket
-import cv2
-import numpy as np
 import threading
 import time
+import serial
+from pymavlink import mavutil
+import sys
+import socket
 import json
-from sdl2 import *
-from sdl2 import joystick
+from com import communication
+import subprocess
 
-latest_telemetry = " "
-last_telemetry_time = 0
-telemetry_lock = threading.Lock()
+def stream_video():
+    """
+    Stream UDP
+    """
 
-# server
-server_ip = '192.168.2.1'
-video_port = 7777
-telemetry_tcp_port = 9999
-joystick_udp_port = 4444
+    server_ip = "192.168.2.1"
+    udp_port = 7777
 
-# client
-client_ip = '192.168.2.2'
-client_port = joystick_udp_port
+    cmd = [
+        "libcamera-vid",
+        "-t", "0",
+        "--inline",
+        "--codec", "mjpeg",
+        "--width", "800", # 720p  : 1280 x 720 30
+        "--height", "600", # HIFPS : 1536 x 864 120
+        "--framerate", "30",
+        "--rotation", "180",
+        "-o", f"udp://{server_ip}:{udp_port}"
+    ]
 
-axes = {
-    'roll': 0,
-    'pitch': 1,
-    'yaw': 2,
-    'throttle': 3
-}
+    print("[INFO] UDP stream: Start ")
 
-output_min = 885
-output_max = 2115
-dead_band = 0.0
-
-
-def handle_telemetry_client(conn, addr):
-    global latest_telemetry, last_telemetry_time
-    print(f"[INFO] Handling telemetry data from {addr}")
-    buffer = ""
-    try:
-        while True:
-            data = conn.recv(1024)
-            if not data:
-                print(f"[INFO] Telemetry connection closed by {addr}.")
-                with telemetry_lock:
-                    latest_telemetry = "No telemetry data available."
-                    last_telemetry_time = time.time()
-                break
-            buffer += data.decode("utf-8")
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
-                with telemetry_lock:
-                    latest_telemetry = line.strip()
-                    last_telemetry_time = time.time()
-                print(f"[Telemetry Received from {addr}] {latest_telemetry}")
-    except Exception as e:
-        print(f"[ERROR] Error handling telemetry from {addr}: {e}")
-        with telemetry_lock:
-            latest_telemetry = "No telemetry data available."
-            last_telemetry_time = time.time()
-    finally:
-        conn.close()
-        print(f"[INFO] Closed telemetry connection with {addr}.")
-
-
-def receive_telemetry_tcp(host='0.0.0.0', port=9999):
-    global latest_telemetry, last_telemetry_time
-
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    try:
-        server_socket.bind((host, port))
-        server_socket.listen()
-        print(f"[INFO] TCP telemetry server listening on {host}:{port}...")
-    except Exception as e:
-        print(f"[ERROR] Failed to bind TCP server on {host}:{port}: {e}")
-        return
-
-    while True:
+    with subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
         try:
-            print("[INFO] Waiting for telemetry sender to connect...")
-            conn, addr = server_socket.accept()
-            print(f"[INFO] Connected by {addr}")
-            client_thread = threading.Thread(target=handle_telemetry_client, args=(conn, addr), daemon=True)
-            client_thread.start()
+            process.wait()
+
+        except KeyboardInterrupt:
+            print("\n[INFO] UDP stream: Stop ")
+            process.terminate()
+
         except Exception as e:
-            print(f"[ERROR] Telemetry server encountered an error: {e}")
-            break
+            print(f"[ERROR] UDP stream error: {e} ")
+            process.terminate()
 
-    server_socket.close()
-    print("[INFO] TCP telemetry server shut down.")
+        finally:
+            print("[INFO] UDP stream: Stop ")
 
+def update_channel(stop_event):
+    self_ip = "192.168.2.2"
+    crsf_port = 4444
 
-def draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font):
-    # text OSD
-    cv2.putText(canvas, telemetry_text, (pos_x, pos_y),
-                font, font_scale,
-                (0, 255, 0), thickness, cv2.LINE_AA)
+    com = communication(com_port='/dev/ttyUSB1')
 
+    # Start the communication transmit thread
+    thread = threading.Thread(target=com.transmit, daemon=True)
+    thread.start()
 
-def draw_crosshair(canvas, center_x, center_y, new_width, crosshair_length_ratio=0.02,
-                   crosshair_thickness_ratio=1 / 1000.0, dot_radius_ratio=0.001, gap_size=10, crosshair_alpha=0.7):
-    crosshair_length = int(new_width * crosshair_length_ratio)  # 2% of frame width
-    crosshair_thickness = max(int(new_width * crosshair_thickness_ratio), 1)
-    crosshair_color = (0, 255, 0)  # White color
-    dot_radius = max(int(new_width * dot_radius_ratio), 2)
-    gap = dot_radius + gap_size
+    # Define PWM channel configurations
+    disarm_channels = [
+        1500, 1500, 885, 1500, 1000, 1500, 1500, 1500,
+        1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500
+    ]
 
-    crosshair_overlay = canvas.copy()
+    arm_channels = [
+        1500, 1500, 885, 1500, 1800, 1500, 1500, 1500,
+        1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500
+    ]
 
-    # vertical lines
-    cv2.line(crosshair_overlay, (center_x, center_y - crosshair_length),
-             (center_x, center_y - gap), crosshair_color, crosshair_thickness)
-    cv2.line(crosshair_overlay, (center_x, center_y + gap),
-             (center_x, center_y + crosshair_length), crosshair_color, crosshair_thickness)
-
-    # horizontal lines
-    cv2.line(crosshair_overlay, (center_x - crosshair_length, center_y),
-             (center_x - gap, center_y), crosshair_color, crosshair_thickness)
-    cv2.line(crosshair_overlay, (center_x + gap, center_y),
-             (center_x + crosshair_length, center_y), crosshair_color, crosshair_thickness)
-
-    # center dot
-    cv2.circle(crosshair_overlay, (center_x, center_y), dot_radius, crosshair_color, -1)
-
-    cv2.addWeighted(crosshair_overlay, crosshair_alpha, canvas, 1 - crosshair_alpha, 0, canvas)
-
-
-def display_frame(canvas, telemetry_text, new_width, new_height, x_offset, y_offset):
-    # telemetry text
-    pos_x = x_offset + int(new_width * 0.35)
-    pos_y = y_offset + int(new_height * 0.05)
-
-    font_scale = max(new_width / 2000.0, 0.5)
-    thickness = max(int(new_width / 2000.0), 1)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font)
-
-    # crosshair center
-    center_x = x_offset + new_width // 2
-    center_y = y_offset + new_height // 2
-
-    draw_crosshair(canvas, center_x, center_y, new_width)
-
-
-def display_no_data(window_width=800, window_height=600):
-    canvas = np.zeros((window_height, window_width, 3), dtype=np.uint8)
-    text = "Video Offline"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5
-    thickness = 1
-    (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-    text_x = (canvas.shape[1] - text_width) // 2
-    text_y = (canvas.shape[0] + text_height) // 2
-    cv2.putText(canvas, text, (text_x, text_y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-    return canvas
-
-
-def map_axis(value, in_min=-1.0, in_max=1.0, out_min=output_min, out_max=output_max):
-    if abs(value) < dead_band:
-        value = 0.0
-
-    value = max(min(value, in_max), in_min)
-
-    mapped = ((value - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min
-    return int(mapped)
-
-
-def joystick_sender():
-    if SDL_Init(SDL_INIT_JOYSTICK) < 0:
-        print("[ERROR] Failed to initialize SDL.")
-        return
-
-    if joystick.SDL_NumJoysticks() < 1:
-        print("[ERROR] No joystick found.")
-        SDL_Quit()
-        return
-
-    js = joystick.SDL_JoystickOpen(0)
-    if not js:
-        print("[ERROR] Failed to open joystick.")
-        SDL_Quit()
-        return
-
-    name = joystick.SDL_JoystickName(js).decode('utf-8')
-    print(f"[INFO] Joystick name: {name}")
-
-    num_buttons = joystick.SDL_JoystickNumButtons(js)
-    print(f"[INFO] Number of buttons: {num_buttons}")
-
-    udp_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    axis_to_channel = {
+        'roll': 0,
+        'pitch': 1, 
+        'yaw': 2, 
+        'throttle': 3
+    }
 
     try:
-        while True:
-            joystick.SDL_JoystickUpdate()
-            axes_values = {}
-            for axis_name, axis_idx in axes.items():
-                axis_val = joystick.SDL_JoystickGetAxis(js, axis_idx) / 32767.0  # Normalize to [-1, 1]
-                axes_values[axis_name] = map_axis(axis_val)
+        # Initialize the drone in a disarmed state
+        com.update_data(disarm_channels)
+        print("[STATUS] Disarm sequence on startup.")
+        armed = False  # Flag to track arming state
+        time.sleep(1)  # Brief pause to ensure commands are sent
 
-            buttons = {}
-            for button_idx in range(num_buttons):
-                button_state = joystick.SDL_JoystickGetButton(js, button_idx)
-                buttons[str(button_idx)] = button_state  # 1 (pressed) or 0 (released)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.bind((self_ip, crsf_port))
+            print(f"[STATUS] UDP: Listening on {self_ip}:{crsf_port}")
 
-            message_dict = {
-                "axes": axes_values,
-                "buttons": buttons
-            }
+            while not stop_event.is_set():
+                try:
+                    udp_socket.settimeout(1.0)  # 1-second timeout for receiving data
+                    data, addr = udp_socket.recvfrom(1024)  # Buffer size of 1024 bytes
 
-            # Convert to JSON string
-            message = json.dumps(message_dict)
+                    decoded_data = data.decode('utf-8')
 
-            try:
-                udp_send_socket.sendto(message.encode('utf-8'), (client_ip, client_port))
-                # print(f"[Joystick Sent] {message} to {client_ip}:{client_port}")
-            except Exception as e:
-                print(f"[ERROR] Failed to send joystick data: {e}")
+                    recv_dict = json.loads(decoded_data)
+                    print(f"[DEBUG] Received data from {addr}: {recv_dict}")
 
-            time.sleep(0.05)  # Send at ~20Hz
+                    # Extract axes and buttons data
+                    axes = recv_dict.get('axes', {})
+                    buttons = recv_dict.get('buttons', {})
+
+                    # Get the state of Button 0 (default to 0 if not present)
+                    button_0_state = buttons.get('0', 0)
+
+                    # Handle arming based on Button 0 state
+                    if button_0_state == 1 and not armed:
+                        # Button 0 pressed: Arm the drone
+                        com.update_data(arm_channels)
+                        print("[INFO] Arm command sent.")
+                        armed = True
+                        time.sleep(0.1)  # Short pause to prevent rapid toggling
+                    elif button_0_state == 0 and armed:
+                        # Button 0 released: Disarm the drone
+                        com.update_data(disarm_channels)
+                        print("[INFO] Disarm command sent.")
+                        armed = False
+                        time.sleep(0.1)  # Short pause to prevent rapid toggling
+
+                    if armed:
+                        # If armed, update PWM channels based on joystick axes
+                        channels_pwm = arm_channels.copy()
+
+                        for axis, channel in axis_to_channel.items():
+                            axis_value = axes.get(axis, channels_pwm[channel])
+
+                            if not isinstance(axis_value, int):
+                                print(f"[WARNING] Invalid value for {axis}: {axis_value}. Skipping.")
+                                continue
+
+                            channels_pwm[channel] = axis_value
+
+                        com.update_data(channels_pwm)
+                        print(f"[INFO] Updated PWM channels: {channels_pwm}")
+                    else:
+                        # If disarmed, ensure PWM channels are set to disarmed state
+                        com.update_data(disarm_channels)
+                        print("[INFO] Drone is disarmed. PWM channels set to disarm.")
+
+                except socket.timeout:
+
+                    current_time = time.time()
+                    time_since_last = current_time - last_received_time
+
+                    if time_since_last > 2.0 and armed:
+                        com.update_data(disarm_channels)
+                        print("[WARNING] No command packets received for 2 seconds. Disarming drone.")
+                        armed = False
+                    
+                except json.JSONDecodeError:
+                    print(f"[ERROR] Received invalid JSON data from {addr}: {data}")
+                except Exception as e:
+                    print(f"[ERROR] {e}")
+
     except KeyboardInterrupt:
-        print("\n[INFO] Joystick sender interrupted by user.")
+        print("\n[INFO] Stopping PWM channel updates.")
+        com.join()
+    except Exception as e:
+        print(f"[ERROR] {e}")
     finally:
-        joystick.SDL_JoystickClose(js)
-        SDL_Quit()
-        udp_send_socket.close()
-        print("[INFO] Joystick sender shut down.")
+        # Ensure the drone is disarmed on exit
+        com.update_data(disarm_channels)
+        print("[INFO] Disarmed channels. Exiting PWM channel thread.")
 
 
-def main():
-    global latest_telemetry, last_telemetry_time
+def mavlink_telem(stop_event):
+    """
+    UART mavlink data handler
+    """
 
-    print("Starting UDP video receiver... Press 'q' to quit.")
+    target_ip = "192.168.2.1"
+    tcp_port = 9999
 
-    # telemetry thread
-    telemetry_thread = threading.Thread(target=receive_telemetry_tcp, daemon=True)
-    telemetry_thread.start()
-
-    # joystick UDP thread
-    joystick_thread = threading.Thread(target=joystick_sender, daemon=True)
-    joystick_thread.start()
+    serial_port = '/dev/ttyUSB0'
+    baud_rate = 115200
 
     try:
-        receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        receiver_socket.bind((server_ip, video_port))
-        receiver_socket.settimeout(1)  # Set timeout to 1 second
-        print(f"[INFO] UDP video receiver bound to {server_ip}:{video_port}, waiting for incoming video data...")
+        master = mavutil.mavlink_connection(serial_port, baud=baud_rate)
+        print("[INFO] Mavlink connection: Successful ")
     except Exception as e:
-        print(f"[ERROR] Failed to create or bind UDP video socket: {e}")
+        print(f"[ERROR] Mavlink comm. failed: {e}")
         return
 
-    window_name = "UDP Video Stream with Telemetry"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 800, 600)
-
-    sharpening_kernel = np.array([[0, -1, 0],
-                                  [-1, 5, -1],
-                                  [0, -1, 0]])
-
-    while True:
-        frame = None
+    while not stop_event.is_set():
         try:
-            data, addr = receiver_socket.recvfrom(65536)
-            frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-            if frame is None:
-                print("[Warning] Decoding failed or received empty frame.")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(10.0)  # Increased timeout for connection attempts
+                print(f"[INFO] Attempting to connect to {target_ip}:{tcp_port}...")
+                try:
+                    s.connect((target_ip, tcp_port))
+                    print("[INFO] TCP connected. Sending telemetry.")
+                except socket.timeout:
+                    print("[ERROR] Connection timed out. Retrying in 5 seconds...")
+                    time.sleep(5)
+                    continue
+                except Exception as e:
+                    print(f"[ERROR] Failed to connect: {e}. Retrying in 5 seconds...")
+                    time.sleep(5)
+                    continue
 
+                while not stop_event.is_set():
+                    try:
+                        msg = master.recv_match(blocking=False)
 
-        except socket.timeout:
-            pass
-        except Exception as e:
-            print(f"[ERROR] Receiving UDP video data failed: {e}")
+                        if not msg:
+                            time.sleep(0.1)
+                            continue
 
-        if frame is not None:
-            sharpened_frame = cv2.filter2D(frame, -1, sharpening_kernel)
+                        msg_type = msg.get_type()
+                        if msg_type == 'SYS_STATUS':
+                            msg_data = msg.to_dict()
 
-            frame_height, frame_width = sharpened_frame.shape[:2]
+                            batV = msg_data.get('voltage_battery', 0) / 1000.0
+                            batI = msg_data.get('current_battery', 0) / 1000.0
 
-            window_rect = cv2.getWindowImageRect(window_name)
-            window_width = window_rect[2] if window_rect[2] > 0 else 800
-            window_height = window_rect[3] if window_rect[3] > 0 else 600
+                            telem_str = f"{batV:.2f} V {batI:.2f} A\n"
+                            print(f"[Mavlink] {telem_str.strip()}")
 
-            if frame_height == 0 or window_height == 0:
-                print("[ERROR] Invalid frame or window height.")
-                continue
+                            try:
+                                s.sendall(telem_str.encode("utf-8"))
+                                print(f"Send: {telem_str.strip()}")
+                            except Exception as e:
+                                print(f"[ERROR] Telem. send error: {e}. Reconnecting...")
+                                break  # Exit the inner loop to attempt reconnection
 
-            aspect_ratio = frame_width / frame_height
-            window_aspect_ratio = window_width / window_height
+                        time.sleep(0.1)
 
-            if window_aspect_ratio > aspect_ratio:
-                new_height = window_height
-                new_width = int(window_height * aspect_ratio)
-            else:
-                new_width = window_width
-                new_height = int(window_width / aspect_ratio)
+                    except Exception as e:
+                        print(f"[ERROR] Mavlink telemetry error: {e}. Reconnecting...")
+                        break  # Exit the inner loop to attempt reconnection
 
-            resized_frame = cv2.resize(sharpened_frame, (new_width, new_height))
-
-            canvas = np.zeros((window_height, window_width, 3), dtype=np.uint8)
-            x_offset = (window_width - new_width) // 2
-            y_offset = (window_height - new_height) // 2
-            canvas[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized_frame
-
-            with telemetry_lock:
-                # Since telemetry_timeout is removed, always display the latest telemetry
-                telemetry_text = latest_telemetry
-
-            # Display frame with overlays
-            display_frame(canvas, telemetry_text, new_width, new_height, x_offset, y_offset)
-
-            cv2.imshow(window_name, canvas)
-        else:
-            # No frame received; display "No video data" with telemetry
-            window_width, window_height = 800, 600  # Default sizes
-            canvas = display_no_data(window_width, window_height)
-
-            with telemetry_lock:
-                telemetry_text = latest_telemetry
-
-            # Telemetry Text Settings
-            pos_x = 50
-            pos_y = 50
-            font_scale = 0.7
-            thickness = 2
-            font = cv2.FONT_HERSHEY_SIMPLEX
-
-            draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font)
-
-            cv2.imshow(window_name, canvas)
-
-        # Handle user input
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            print("User requested exit.")
+        except KeyboardInterrupt:
+            print("\n[INFO] Stopping Mavlink Telemetry.")
             break
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {e}. Retrying in 5 seconds...")
+            time.sleep(5)
 
-    receiver_socket.close()
-    cv2.destroyAllWindows()
-    print("[INFO] Receiver shut down.")
+    print("[INFO] Mavlink telemetry thread exiting.")
+
 
 
 if __name__ == "__main__":
+    stop_event = threading.Event()
+
+    # Initialize threads
+    video_thread = threading.Thread(target=stream_video, daemon=True)
+    pwm_thread   = threading.Thread(target=update_channel, args=(stop_event,), daemon=True)  
+    telem_thread = threading.Thread(target=mavlink_telem, args=(stop_event,), daemon=True) 
+
+    # Start threads
+    video_thread.start()
+    pwm_thread.start()
+    telem_thread.start()
+
     try:
-        main()
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("\nExiting on user request (Ctrl+C).")
+        print("\n[INFO] Exiting main program.")
+        stop_event.set()  
+        pwm_thread.join()  
+        telem_thread.join()
     finally:
-        cv2.destroyAllWindows()
-
-
-
-
-
+        print("[INFO] Program terminated.")
