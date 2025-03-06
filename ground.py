@@ -1,11 +1,34 @@
+"""
+
+320 x 240 - 33ms
+640 x 480 - 42ms
+
+Pi command:
+
+gst-launch-1.0 libcamerasrc ! \
+    'video/x-raw,width=640,height=480,format=NV12,framerate=30/1' ! \
+    videoconvert ! \
+    jpegenc quality=50 ! \
+    rtpjpegpay ! \
+    udpsink host=192.168.2.1 port=7777
+
+
+Ground PC:
+
+gst-launch-1.0 -v udpsrc port=7777 caps="application/x-rtp, encoding-name=JPEG, payload=26" ! rtpjpegdepay ! jpegdec ! videoconvert ! videoflip method=rotate-180 ! autovideosink sync=false
+
+"""
+
 import socket
 import cv2
 import numpy as np
 import threading
 import time
 import json
+import subprocess
 from sdl2 import *
 from sdl2 import joystick
+import tkinter as tk
 
 latest_telemetry = " "
 last_telemetry_time = 0
@@ -31,7 +54,6 @@ axes = {
 output_min = 885
 output_max = 2115
 dead_band = 0.0
-
 
 def handle_telemetry_client(conn, addr):
     global latest_telemetry, last_telemetry_time
@@ -90,73 +112,6 @@ def receive_telemetry_tcp(host='0.0.0.0', port=9999):
 
     server_socket.close()
     print("[INFO] TCP telemetry server shut down.")
-
-
-def draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font):
-    # text OSD
-    cv2.putText(canvas, telemetry_text, (pos_x, pos_y),
-                font, font_scale,
-                (0, 255, 0), thickness, cv2.LINE_AA)
-
-
-def draw_crosshair(canvas, center_x, center_y, new_width, crosshair_length_ratio=0.02,
-                   crosshair_thickness_ratio=1 / 1000.0, dot_radius_ratio=0.001, gap_size=10, crosshair_alpha=0.7):
-    crosshair_length = int(new_width * crosshair_length_ratio)  # 2% of frame width
-    crosshair_thickness = max(int(new_width * crosshair_thickness_ratio), 1)
-    crosshair_color = (0, 255, 0)  # White color
-    dot_radius = max(int(new_width * dot_radius_ratio), 2)
-    gap = dot_radius + gap_size
-
-    crosshair_overlay = canvas.copy()
-
-    # vertical lines
-    cv2.line(crosshair_overlay, (center_x, center_y - crosshair_length),
-             (center_x, center_y - gap), crosshair_color, crosshair_thickness)
-    cv2.line(crosshair_overlay, (center_x, center_y + gap),
-             (center_x, center_y + crosshair_length), crosshair_color, crosshair_thickness)
-
-    # horizontal lines
-    cv2.line(crosshair_overlay, (center_x - crosshair_length, center_y),
-             (center_x - gap, center_y), crosshair_color, crosshair_thickness)
-    cv2.line(crosshair_overlay, (center_x + gap, center_y),
-             (center_x + crosshair_length, center_y), crosshair_color, crosshair_thickness)
-
-    # center dot
-    cv2.circle(crosshair_overlay, (center_x, center_y), dot_radius, crosshair_color, -1)
-
-    cv2.addWeighted(crosshair_overlay, crosshair_alpha, canvas, 1 - crosshair_alpha, 0, canvas)
-
-
-def display_frame(canvas, telemetry_text, new_width, new_height, x_offset, y_offset):
-    # telemetry text
-    pos_x = x_offset + int(new_width * 0.35)
-    pos_y = y_offset + int(new_height * 0.05)
-
-    font_scale = max(new_width / 2000.0, 0.5)
-    thickness = max(int(new_width / 2000.0), 1)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font)
-
-    # crosshair center
-    center_x = x_offset + new_width // 2
-    center_y = y_offset + new_height // 2
-
-    draw_crosshair(canvas, center_x, center_y, new_width)
-
-
-def display_no_data(window_width=800, window_height=600):
-    canvas = np.zeros((window_height, window_width, 3), dtype=np.uint8)
-    text = "Video Offline"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5
-    thickness = 1
-    (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-    text_x = (canvas.shape[1] - text_width) // 2
-    text_y = (canvas.shape[0] + text_height) // 2
-    cv2.putText(canvas, text, (text_x, text_y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-    return canvas
-
 
 def map_axis(value, in_min=-1.0, in_max=1.0, out_min=output_min, out_max=output_max):
     if abs(value) < dead_band:
@@ -228,6 +183,27 @@ def joystick_sender():
         udp_send_socket.close()
         print("[INFO] Joystick sender shut down.")
 
+def run_overlay():
+    overlay_window = create_overlay_window()
+    overlay_window.mainloop()
+
+def update_overlay(label):
+    global latest_telemetry
+
+    while True:
+        label.config(text=latest_telemetry)
+        time.sleep(0.5)
+
+def create_overlay_window():
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    root.attributes("-alpha", 0.7)
+    root.geometry("+50+50")
+    label = tk.Label(root, text="", font=("Helvetica", 16), fg="white", bg="black")
+    label.pack()
+    threading.Thread(target=update_overlay, args=(label,), daemon=True).start()
+    return root
 
 def main():
     global latest_telemetry, last_telemetry_time
@@ -242,103 +218,38 @@ def main():
     joystick_thread = threading.Thread(target=joystick_sender, daemon=True)
     joystick_thread.start()
 
+    overlay_thread = threading.Thread(target=run_overlay, daemon=True)
+    overlay_thread.start()
+
+    working_dir = r"C:\gstreamer\1.0\msvc_x86_64\bin"
+
+    # Define the GStreamer pipeline command to receive the video stream.
+    cmd = (
+        'gst-launch-1.0 -v udpsrc port=7777 caps="application/x-rtp, encoding-name=JPEG, payload=26" ! '
+        'rtpjpegdepay ! jpegdec ! videoconvert ! videoflip method=rotate-180 ! autovideosink sync=false'
+    )
+
+    # On Windows, use CREATE_NEW_PROCESS_GROUP to allow sending CTRL_BREAK_EVENT.
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    # Launch the command in a shell with the specified working directory.
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=working_dir,
+        creationflags=creationflags
+    )
+
     try:
-        receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        receiver_socket.bind((server_ip, video_port))
-        receiver_socket.settimeout(1)  # Set timeout to 1 second
-        print(f"[INFO] UDP video receiver bound to {server_ip}:{video_port}, waiting for incoming video data...")
-    except Exception as e:
-        print(f"[ERROR] Failed to create or bind UDP video socket: {e}")
-        return
-
-    window_name = "UDP Video Stream with Telemetry"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 800, 600)
-
-    sharpening_kernel = np.array([[0, -1, 0],
-                                  [-1, 5, -1],
-                                  [0, -1, 0]])
-
-    while True:
-        frame = None
-        try:
-            data, addr = receiver_socket.recvfrom(65536)
-            frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-            if frame is None:
-                print("[Warning] Decoding failed or received empty frame.")
-
-
-        except socket.timeout:
-            pass
-        except Exception as e:
-            print(f"[ERROR] Receiving UDP video data failed: {e}")
-
-        if frame is not None:
-            sharpened_frame = cv2.filter2D(frame, -1, sharpening_kernel)
-
-            frame_height, frame_width = sharpened_frame.shape[:2]
-
-            window_rect = cv2.getWindowImageRect(window_name)
-            window_width = window_rect[2] if window_rect[2] > 0 else 800
-            window_height = window_rect[3] if window_rect[3] > 0 else 600
-
-            if frame_height == 0 or window_height == 0:
-                print("[ERROR] Invalid frame or window height.")
-                continue
-
-            aspect_ratio = frame_width / frame_height
-            window_aspect_ratio = window_width / window_height
-
-            if window_aspect_ratio > aspect_ratio:
-                new_height = window_height
-                new_width = int(window_height * aspect_ratio)
-            else:
-                new_width = window_width
-                new_height = int(window_width / aspect_ratio)
-
-            resized_frame = cv2.resize(sharpened_frame, (new_width, new_height))
-
-            canvas = np.zeros((window_height, window_width, 3), dtype=np.uint8)
-            x_offset = (window_width - new_width) // 2
-            y_offset = (window_height - new_height) // 2
-            canvas[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized_frame
-
-            with telemetry_lock:
-                # Since telemetry_timeout is removed, always display the latest telemetry
-                telemetry_text = latest_telemetry
-
-            # Display frame with overlays
-            display_frame(canvas, telemetry_text, new_width, new_height, x_offset, y_offset)
-
-            cv2.imshow(window_name, canvas)
-        else:
-            # No frame received; display "No video data" with telemetry
-            window_width, window_height = 800, 600  # Default sizes
-            canvas = display_no_data(window_width, window_height)
-
-            with telemetry_lock:
-                telemetry_text = latest_telemetry
-
-            # Telemetry Text Settings
-            pos_x = 50
-            pos_y = 50
-            font_scale = 0.7
-            thickness = 2
-            font = cv2.FONT_HERSHEY_SIMPLEX
-
-            draw_telemetry(canvas, telemetry_text, pos_x, pos_y, font_scale, thickness, font)
-
-            cv2.imshow(window_name, canvas)
-
-        # Handle user input
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            print("User requested exit.")
-            break
-
-    receiver_socket.close()
-    cv2.destroyAllWindows()
-    print("[INFO] Receiver shut down.")
+        # Wait for the process to complete.
+        process.wait()
+    except KeyboardInterrupt:
+        print("\nCtrl+C received. Terminating the GStreamer pipeline...")
+        # Send CTRL_BREAK_EVENT to the process group so the process terminates gracefully.
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+        process.wait()
+    finally:
+        print("GStreamer pipeline terminated.")
 
 
 if __name__ == "__main__":
