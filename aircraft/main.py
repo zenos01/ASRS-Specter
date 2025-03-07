@@ -1,55 +1,52 @@
 import threading
 import time
 import serial
+import os
 from pymavlink import mavutil
 import sys
 import socket
 import json
 from com import communication
 import subprocess
+import signal
 
-def stream_video():
+def stream_video(stop_event):
     """
     Stream UDP
     """
 
-    server_ip = "192.168.2.1"
-    udp_port = 7777
+    cmd = (
+        "gst-launch-1.0 libcamerasrc ! "
+        "'video/x-raw,width=640,height=480,format=NV12,framerate=30/1' ! "
+        "videoconvert ! "
+        "jpegenc quality=50 ! "
+        "rtpjpegpay ! "
+        "udpsink host=192.168.2.1 port=7777"
+    )
 
-    cmd = [
-        "libcamera-vid",
-        "-t", "0",
-        "--inline",
-        "--codec", "mjpeg",
-        "--width", "800", # 720p  : 1280 x 720 30
-        "--height", "600", # HIFPS : 1536 x 864 120
-        "--framerate", "30",
-        "--rotation", "180",
-        "-o", f"udp://{server_ip}:{udp_port}"
-    ]
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        preexec_fn=os.setsid
+    )
 
-    print("[INFO] UDP stream: Start ")
+    try:
+        while process.poll() is None:
+            if stop_event.is_set():
+                print("[INFO] Stopping gstreamer")
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                break
+            time.sleep(0.1)
 
-    with subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
-        try:
-            process.wait()
-
-        except KeyboardInterrupt:
-            print("\n[INFO] UDP stream: Stop ")
-            process.terminate()
-
-        except Exception as e:
-            print(f"[ERROR] UDP stream error: {e} ")
-            process.terminate()
-
-        finally:
-            print("[INFO] UDP stream: Stop ")
+    finally:
+        process.wait()
+        print("[INFO] Gstreamer pipeline terminated.")
 
 def update_channel(stop_event):
     self_ip = "192.168.2.2"
     crsf_port = 4444
 
-    com = communication(com_port='/dev/ttyUSB1')
+    com = communication(com_port='/dev/ttyUSB0')
 
     # Start the communication transmit thread
     thread = threading.Thread(target=com.transmit, daemon=True)
@@ -68,8 +65,8 @@ def update_channel(stop_event):
 
     axis_to_channel = {
         'roll': 0,
-        'pitch': 1, 
-        'yaw': 2, 
+        'pitch': 1,
+        'yaw': 2,
         'throttle': 3
     }
 
@@ -144,7 +141,7 @@ def update_channel(stop_event):
                         com.update_data(disarm_channels)
                         print("[WARNING] No command packets received for 2 seconds. Disarming drone.")
                         armed = False
-                    
+
                 except json.JSONDecodeError:
                     print(f"[ERROR] Received invalid JSON data from {addr}: {data}")
                 except Exception as e:
@@ -169,7 +166,7 @@ def mavlink_telem(stop_event):
     target_ip = "192.168.2.1"
     tcp_port = 9999
 
-    serial_port = '/dev/ttyUSB0'
+    serial_port = '/dev/ttyUSB1'
     baud_rate = 115200
 
     try:
@@ -209,7 +206,7 @@ def mavlink_telem(stop_event):
                             msg_data = msg.to_dict()
 
                             batV = msg_data.get('voltage_battery', 0) / 1000.0
-                            batI = msg_data.get('current_battery', 0) / 1000.0
+                            batI = msg_data.get('current_battery', 0) / 100.0
 
                             telem_str = f"{batV:.2f} V {batI:.2f} A\n"
                             print(f"[Mavlink] {telem_str.strip()}")
@@ -242,9 +239,9 @@ if __name__ == "__main__":
     stop_event = threading.Event()
 
     # Initialize threads
-    video_thread = threading.Thread(target=stream_video, daemon=True)
-    pwm_thread   = threading.Thread(target=update_channel, args=(stop_event,), daemon=True)  
-    telem_thread = threading.Thread(target=mavlink_telem, args=(stop_event,), daemon=True) 
+    video_thread = threading.Thread(target=stream_video, args=(stop_event,), daemon=True)
+    pwm_thread   = threading.Thread(target=update_channel, args=(stop_event,), daemon=True)
+    telem_thread = threading.Thread(target=mavlink_telem, args=(stop_event,), daemon=True)
 
     # Start threads
     video_thread.start()
@@ -256,8 +253,9 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] Exiting main program.")
-        stop_event.set()  
-        pwm_thread.join()  
+        stop_event.set()
+        pwm_thread.join()
         telem_thread.join()
+        video_thread.join()
     finally:
         print("[INFO] Program terminated.")
