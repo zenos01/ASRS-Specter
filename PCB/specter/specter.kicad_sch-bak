@@ -40625,7 +40625,7 @@
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
-		(on_board no)
+		(on_board yes)
 		(dnp yes)
 		(uuid "cb57c917-d197-4eb6-a978-2d1754f8c310")
 		(property "Reference" "J7"
