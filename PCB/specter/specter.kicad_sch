@@ -14150,6 +14150,19 @@
 		)
 		(uuid e27d83cd-f25a-4cb6-a522-cca113648f96)
 	)
+	(text "Checked\n"
+		(exclude_from_sim no)
+		(at 445.77 110.49 0)
+		(effects
+			(font
+				(face "Avenir Next")
+				(size 1.7 1.7)
+				(bold yes)
+				(color 0 255 0 1)
+			)
+		)
+		(uuid "02b8019d-3e7e-42e0-a540-10c3354d26b5")
+	)
 	(text "3.3V logic level"
 		(exclude_from_sim no)
 		(at 370.84 99.06 0)
@@ -14266,6 +14279,19 @@
 			)
 		)
 		(uuid "43c77867-1b97-4760-bec4-50659b1653bd")
+	)
+	(text "Checked\n"
+		(exclude_from_sim no)
+		(at 445.77 20.828 0)
+		(effects
+			(font
+				(face "Avenir Next")
+				(size 1.7 1.7)
+				(bold yes)
+				(color 0 255 0 1)
+			)
+		)
+		(uuid "5203c21d-a555-4e45-b361-610ab5aeb176")
 	)
 	(text "GPIO"
 		(exclude_from_sim no)
@@ -14462,6 +14488,19 @@
 		)
 		(uuid "b9dfa6ca-bd39-4dca-aae9-7aec651a9920")
 	)
+	(text "Checked\n"
+		(exclude_from_sim no)
+		(at 233.172 21.082 0)
+		(effects
+			(font
+				(face "Avenir Next")
+				(size 1.7 1.7)
+				(bold yes)
+				(color 0 255 0 1)
+			)
+		)
+		(uuid "bd46ee51-4e0e-45b1-80dd-3501cff97e31")
+	)
 	(text "Power Button"
 		(exclude_from_sim no)
 		(at 393.7 186.055 0)
@@ -14500,6 +14539,19 @@
 			)
 		)
 		(uuid "cd07ef42-1bc8-4f21-9009-f80f760900d1")
+	)
+	(text "Checked\n"
+		(exclude_from_sim no)
+		(at 18.796 20.32 0)
+		(effects
+			(font
+				(face "Avenir Next")
+				(size 1.7 1.7)
+				(bold yes)
+				(color 0 255 0 1)
+			)
+		)
+		(uuid "d2d0de15-7631-4017-9e42-2f13ea4da8b1")
 	)
 	(text "Power In"
 		(exclude_from_sim no)
@@ -27856,7 +27908,7 @@
 		(lib_id "Jumper:SolderJumper_2_Open")
 		(at 459.105 165.1 0)
 		(unit 1)
-		(exclude_from_sim yes)
+		(exclude_from_sim no)
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
@@ -28380,7 +28432,7 @@
 		(dnp no)
 		(uuid "1108aa52-d625-47cb-a3ba-cac790b8ae7c")
 		(property "Reference" "J4"
-			(at 518.795 134.62 0)
+			(at 497.713 105.918 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -28389,7 +28441,7 @@
 			)
 		)
 		(property "Value" "Conn_01x22_Socket"
-			(at 520.7 137.16 0)
+			(at 499.618 108.458 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -29868,7 +29920,7 @@
 		(lib_id "Jumper:SolderJumper_2_Open")
 		(at 459.105 162.56 0)
 		(unit 1)
-		(exclude_from_sim yes)
+		(exclude_from_sim no)
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
@@ -41913,7 +41965,7 @@
 		(dnp no)
 		(uuid "ea6df295-508b-4aa8-b45a-5bbca73fb64b")
 		(property "Reference" "J5"
-			(at 568.325 134.62 0)
+			(at 547.243 105.918 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -41922,7 +41974,7 @@
 			)
 		)
 		(property "Value" "Conn_01x22_Socket"
-			(at 570.23 137.16 0)
+			(at 549.148 108.458 0)
 			(effects
 				(font
 					(size 1.27 1.27)

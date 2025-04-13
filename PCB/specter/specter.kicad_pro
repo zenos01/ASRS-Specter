@@ -525,7 +525,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "../../../../../Downloads/outputs/",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "../../../../../Downloads/specter.step",
